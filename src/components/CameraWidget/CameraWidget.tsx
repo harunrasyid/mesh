@@ -1,17 +1,20 @@
-// src/components/CameraWidget.tsx
 import { useVideoRecognition } from "@/hooks/useVideoRecognition";
 import { Camera } from "@mediapipe/camera_utils";
 import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
-import {
-  FACEMESH_TESSELATION,
-  HAND_CONNECTIONS,
-  Holistic,
-  POSE_CONNECTIONS,
-  type Results,
-} from "@mediapipe/holistic";
+import { HAND_CONNECTIONS, Hands, type Results } from "@mediapipe/hands";
 import { useEffect, useRef, useState } from "react";
-import { Box, IconButton } from "@chakra-ui/react";
+import { Box, IconButton, VStack } from "@chakra-ui/react";
 import { StopCircle, PlayCircle } from "lucide-react";
+
+function isPinching(landmarks: { x: number; y: number }[]) {
+  const thumbTip = landmarks[4];
+  const indexTip = landmarks[8];
+  const dx = thumbTip.x - indexTip.x;
+  const dy = thumbTip.y - indexTip.y;
+  const distance = Math.sqrt(dx * dx + dy * dy);
+  console.log("isPinching", distance < 0.05);
+  return distance < 0.05; // adjust threshold
+}
 
 export const CameraWidget: React.FC = () => {
   const [start, setStart] = useState<boolean>(false);
@@ -22,6 +25,10 @@ export const CameraWidget: React.FC = () => {
   const setVideoElement = useVideoRecognition(
     (state) => state?.setVideoElement
   );
+
+  // gesture state
+  const isDraggingRef = useRef(false);
+  const lastYRef = useRef(0);
 
   const drawResults = (results: Results) => {
     if (!drawCanvas.current || !videoElement.current) return;
@@ -38,58 +45,35 @@ export const CameraWidget: React.FC = () => {
     canvasCtx.save();
     canvasCtx.clearRect(0, 0, canvas.width, canvas.height);
 
-    // Pose
-    if (results.poseLandmarks) {
-      drawConnectors(canvasCtx, results.poseLandmarks, POSE_CONNECTIONS, {
-        color: "#00cff7",
-        lineWidth: 4,
-      });
-      drawLandmarks(canvasCtx, results.poseLandmarks, {
-        color: "#ff0364",
-        lineWidth: 2,
-      });
-    }
+    // Draw hands
+    if (results.multiHandLandmarks) {
+      for (const landmarks of results.multiHandLandmarks) {
+        drawConnectors(canvasCtx, landmarks, HAND_CONNECTIONS, {
+          color: "#22c3e3",
+          lineWidth: 4,
+        });
+        drawLandmarks(canvasCtx, landmarks, {
+          color: "#ff0364",
+          lineWidth: 2,
+        });
 
-    // Face
-    if (results.faceLandmarks) {
-      drawConnectors(canvasCtx, results.faceLandmarks, FACEMESH_TESSELATION, {
-        color: "#C0C0C070",
-        lineWidth: 1,
-      });
-      if (results.faceLandmarks.length === 478) {
-        drawLandmarks(
-          canvasCtx,
-          [results.faceLandmarks[468], results.faceLandmarks[473]],
-          {
-            color: "#ffe603",
-            lineWidth: 2,
+        // 👉 handle gesture (pinch + drag)
+        if (isPinching(landmarks)) {
+          const handY = landmarks[9].y; // middle of the palm
+          if (!isDraggingRef.current) {
+            console.log("dragging");
+            isDraggingRef.current = true;
+            lastYRef.current = handY;
+          } else {
+            const deltaY = (handY - lastYRef.current) * 1000; // scale
+            window.scrollBy(0, deltaY);
+            lastYRef.current = handY;
           }
-        );
+        } else {
+          isDraggingRef.current = false;
+          console.log("not dragging");
+        }
       }
-    }
-
-    // Left hand
-    if (results.leftHandLandmarks) {
-      drawConnectors(canvasCtx, results.leftHandLandmarks, HAND_CONNECTIONS, {
-        color: "#eb1064",
-        lineWidth: 5,
-      });
-      drawLandmarks(canvasCtx, results.leftHandLandmarks, {
-        color: "#00cff7",
-        lineWidth: 2,
-      });
-    }
-
-    // Right hand
-    if (results.rightHandLandmarks) {
-      drawConnectors(canvasCtx, results.rightHandLandmarks, HAND_CONNECTIONS, {
-        color: "#22c3e3",
-        lineWidth: 5,
-      });
-      drawLandmarks(canvasCtx, results.rightHandLandmarks, {
-        color: "#ff0364",
-        lineWidth: 2,
-      });
     }
 
     canvasCtx.restore();
@@ -109,27 +93,26 @@ export const CameraWidget: React.FC = () => {
 
     setVideoElement(videoElement.current);
 
-    const holistic = new Holistic({
+    const hands = new Hands({
       locateFile: (file) =>
-        `https://cdn.jsdelivr.net/npm/@mediapipe/holistic@0.5.1635989137/${file}`,
+        `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`,
     });
 
-    holistic.setOptions({
+    hands.setOptions({
+      maxNumHands: 1,
       modelComplexity: 1,
-      smoothLandmarks: true,
       minDetectionConfidence: 0.7,
       minTrackingConfidence: 0.7,
-      refineFaceLandmarks: true,
     });
 
-    holistic.onResults((results: Results) => {
+    hands.onResults((results: Results) => {
       drawResults(results);
       useVideoRecognition.getState().resultsCallback?.(results);
     });
 
     const camera = new Camera(videoElement.current, {
       onFrame: async () => {
-        await holistic.send({ image: videoElement.current! });
+        await hands.send({ image: videoElement.current! });
       },
       width: 640,
       height: 480,
@@ -138,15 +121,19 @@ export const CameraWidget: React.FC = () => {
   }, [start, setVideoElement]);
 
   return (
-    <>
+    <VStack
+      css={{
+        display: "flex",
+        position: "fixed",
+        bottom: "1rem",
+        right: "1rem",
+        zIndex: 20,
+      }}
+    >
       {/* Floating button */}
       <IconButton
         aria-label={start ? "Stop camera" : "Start camera"}
         onClick={() => setStart((prev) => !prev)}
-        position="fixed"
-        bottom="1rem"
-        right="1rem"
-        zIndex={20}
         rounded="full"
         p={4}
         color="white"
@@ -160,14 +147,17 @@ export const CameraWidget: React.FC = () => {
       {/* Camera view */}
       {start && (
         <Box
-          position="absolute"
-          bottom="6rem"
-          right="1rem"
-          w="320px"
-          h="240px"
           rounded="xl"
           overflow="hidden"
           zIndex={9999}
+          css={{
+            position: "relative",
+            w: "320px",
+            h: "240px",
+            rounded: "xl",
+            overflow: "hidden",
+            zIndex: 9999,
+          }}
         >
           <canvas
             ref={drawCanvas}
@@ -195,6 +185,6 @@ export const CameraWidget: React.FC = () => {
           />
         </Box>
       )}
-    </>
+    </VStack>
   );
 };

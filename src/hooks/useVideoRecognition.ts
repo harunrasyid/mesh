@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { Results } from "@mediapipe/holistic";
+import type { Results } from "@mediapipe/hands";
 
 type VideoRecognitionState = {
   videoElement: HTMLVideoElement | null;
